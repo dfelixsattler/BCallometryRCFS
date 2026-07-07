@@ -113,3 +113,13 @@ trees$BIOMASS_KG <- biomass_tree(trees$SPECIES_NAME, trees$DBH,
 ```r
 citation("BCallometryRCFS")
 ```
+
+## Acknowledgements
+
+The allometric methods implemented in this package build directly on the work
+of **Yong Luo** (Canadian Forest Service / BC Ministry of Forests), whose
+development of [FAIBBase](https://github.com/bcgov/FAIBBase) and
+[FAIBCompiler](https://github.com/bcgov/FAIBCompiler) established the
+computational foundation for BC's PSP and non-PSP compilation routines,
+including the Kozak taper equations, height–diameter modelling, and biomass
+calculations that underpin this package.
