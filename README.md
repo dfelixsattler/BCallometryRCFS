@@ -123,3 +123,10 @@ development of [FAIBBase](https://github.com/bcgov/FAIBBase) and
 computational foundation for BC's PSP and non-PSP compilation routines,
 including the Kozak taper equations, height–diameter modelling, and biomass
 calculations that underpin this package.
+
+## License
+
+© His Majesty the King in Right of Canada, as represented by the Minister of
+Natural Resources, 2026.
+
+This package is distributed under the [Apache License 2.0](LICENSE).
