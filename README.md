@@ -116,13 +116,10 @@ citation("BCallometryRCFS")
 
 ## Acknowledgements
 
-The allometric methods implemented in this package build directly on the work
-of **Yong Luo** (Canadian Forest Service / BC Ministry of Forests), whose
-development of [FAIBBase](https://github.com/bcgov/FAIBBase) and
-[FAIBCompiler](https://github.com/bcgov/FAIBCompiler) established the
-computational foundation for BC's PSP and non-PSP compilation routines,
-including the Kozak taper equations, height–diameter modelling, and biomass
-calculations that underpin this package.
+The allometric methods implemented in this package build on the work of
+**Yong Luo** (BC Ministry of Forests) and the
+[FAIBBase](https://github.com/bcgov/FAIBBase) and
+[FAIBCompiler](https://github.com/bcgov/FAIBCompiler) packages.
 
 ## License
 
