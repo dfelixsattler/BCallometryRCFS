@@ -1,0 +1,223 @@
+---
+title: "Height-Diameter Modelling with PSP Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Height-Diameter Modelling with PSP Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 6,
+  fig.height = 4
+)
+```
+
+## Overview
+
+Height-diameter (H-D) allometric models are a cornerstone of BC forest
+inventory and growth modelling. In Permanent Sample Plot (PSP) programs,
+tree heights are expensive to measure, so only a subset of trees in each
+plot are typically measured for height. H-D models are fitted to those
+measured trees and then used to **predict heights for all remaining
+unmeasured stems**.
+
+This vignette demonstrates the full workflow using simulated PSP data:
+
+1. Simulate a multi-plot, multi-species PSP dataset with realistic missing heights  
+2. Explore the observed H-D relationships  
+3. Fit fixed-effects models and compare model forms  
+4. Fit a mixed-effects model with a random plot effect  
+5. Predict missing heights across the dataset  
+
+---
+
+## 1. Load PSP Data
+
+The built-in `psp_trees` dataset contains 20 plots across four BEC zones with
+five species. We use three species here (Douglas-fir `FDI`, Lodgepole pine
+`PLI`, Western hemlock `HW`). Approximately 25% of trees have measured
+heights; the remaining 75% are `NA`. The dataset also includes dead standing
+trees (`LV_D == "D"`, ~11%) and broken-top trees (`BTOP == TRUE`, ~5%)
+— both are excluded from H-D model training.
+
+```{r load-data}
+library(BCallometryRCFS)
+
+sim_trees <- psp_trees[psp_trees$SPECIES %in% c("FDI", "PLI", "HW"), ]
+
+# Species crosswalk — required for fit_hd_models_by_group() and ht_impute()
+sim_trees$SPECIES_CORR    <- species_correction(sim_trees$SPECIES,
+                                                sim_trees$BEC_ZONE)
+sim_trees$SPECIES_SP0     <- bc_species_to_sp0(sim_trees$SPECIES_CORR)
+sim_trees$SPECIES_SP_TYPE <- bc_species_to_sp_type(sim_trees$SPECIES_CORR)
+
+cat(sprintf("Plots: %d   |   Trees: %d   |   Measured: %d   |   Missing: %d\n",
+            length(unique(sim_trees$SITE_IDENTIFIER)),
+            nrow(sim_trees),
+            sum(!is.na(sim_trees$HEIGHT)),
+            sum(is.na(sim_trees$HEIGHT))))
+```
+
+---
+
+## 2. Explore the H-D Relationships
+
+A quick look at the measured trees before fitting anything.
+
+```{r explore}
+# Training data: alive trees with measured height, no broken tops
+measured <- sim_trees[!is.na(sim_trees$HEIGHT) &
+                       sim_trees$LV_D == "L" &
+                       !sim_trees$BTOP, ]
+
+# Summary by species
+sp_summary <- do.call(rbind, lapply(sort(unique(sim_trees$SPECIES)), function(sp) {
+  sub <- measured[measured$SPECIES == sp, ]
+  data.frame(Species = sp, N = nrow(sub),
+             DBH_min = min(sub$DBH), DBH_max = max(sub$DBH),
+             HT_min  = min(sub$HEIGHT), HT_max = max(sub$HEIGHT))
+}))
+print(sp_summary, row.names = FALSE)
+```
+
+```{r plot-hd, fig.cap = "Observed height-diameter relationships by species."}
+sp_colours <- c(FDI = "#1b7837", PLI = "#762a83", HW = "#d6604d")
+
+plot(HEIGHT ~ DBH, data = measured,
+     col  = sp_colours[measured$SPECIES],
+     pch  = 16, cex = 0.7,
+     xlab = "DBH (cm)", ylab = "Height (m)",
+     main = "Observed H-D relationships")
+legend("topleft", legend = names(sp_colours),
+       col = sp_colours, pch = 16, bty = "n")
+```
+
+---
+
+## 3. H-D Model Fitting
+
+`fit_hd_model()` fits a single H-D model to a set of measured trees.
+It supports six model forms (`"naslund"`, `"curtis"`, `"korf"`,
+`"weibull"`, `"richards"`, `"logistic"`); Naslund is the default and
+generally performs well across BC species and size ranges.
+
+Here we fit all forms to Douglas-fir (`FDI`) and rank by marginal R²:
+
+```{r compare-models}
+fd_data <- measured[measured$SPECIES == "FDI", ]
+
+model_forms <- c("naslund", "curtis", "korf", "weibull", "richards")
+
+results <- do.call(rbind, lapply(model_forms, function(m) {
+  fit <- tryCatch(fit_hd_model(fd_data, model = m), error = function(e) NULL)
+  data.frame(model   = m,
+             r2_marg = if (is.null(fit)) NA else round(fit$r2_marg, 4))
+}))
+
+results <- results[order(-results$r2_marg, na.last = TRUE), ]
+print(results, row.names = FALSE)
+```
+
+The differences between forms are often small when data cover a wide DBH
+range. To inspect and visualise a specific fit:
+
+```{r plot-fit, fig.cap = "Naslund model fitted to Fd trees (dashed curve)."}
+fd_naslund <- fit_hd_model(fd_data, model = "naslund")
+cat("Fitted coefficients:", round(fd_naslund$coefficients, 4), "\n")
+cat("Marginal R²        :", round(fd_naslund$r2_marg, 4), "\n")
+
+cf      <- fd_naslund$coefficients
+dbh_seq <- seq(5, 65, by = 0.5)
+
+plot(HEIGHT ~ DBH, data = fd_data,
+     col  = "#1b7837", pch = 16, cex = 0.7,
+     xlab = "DBH (cm)", ylab = "Height (m)",
+     main = "FDI (Douglas-fir) \u2014 Naslund H-D model")
+lines(dbh_seq,
+      ht_from_dbh(dbh_seq, model = "naslund", a = cf["a"], b = cf["b"]),
+      lwd = 2, lty = 2, col = "black")
+legend("topleft", legend = c("Observed", "Fitted"), pch = c(16, NA),
+       lty = c(NA, 2), col = c("#1b7837", "black"), bty = "n")
+```
+
+---
+
+## 4. Mixed-Effects Model — Random Plot Effect
+
+`fit_hd_model()` supports two levels of random effects via `group_col` and
+`nested_col`:
+
+- **`group_col`** (plot level) — a random effect on the asymptote parameter
+  captures plot-to-plot productivity differences, improving predictions for
+  trees on plots where some heights were measured.
+- **`nested_col`** (tree level, nested within plot) — for multi-year PSP data
+  where the same tree is measured repeatedly, adding a tree-level random
+  effect accounts for individual tree-to-tree variation within a plot.
+  Trees measured only once receive a tree-level BLUP of zero and fall back
+  to the plot-level prediction.
+
+For single-occasion data (each tree appears once), only `group_col` is
+needed. For multi-year data, supply both.
+
+```{r fit-mixed, eval = requireNamespace("nlme", quietly = TRUE)}
+# Single-occasion: plot-level random effect only
+fd_me <- fit_hd_model(fd_data, model = "naslund", group_col = "SITE_IDENTIFIER")
+
+cat("Fixed coefficients :", round(fd_me$coefficients, 4), "\n")
+cat("Marginal R²        :", round(fd_me$r2_marg, 4), "\n")
+```
+
+The marginal R² for the mixed-effects model is typically similar to or
+slightly lower than the fixed-effects R², because the random effects absorb
+some of the between-plot variance rather than the fixed-effects prediction.
+The mixed-effects model is preferred when you have a clear grouping
+structure and enough trees per group (generally ≥ 5–10).
+
+---
+
+## 5. Predict Missing Heights
+
+For operational use across all species and plots, `fit_hd_models_by_group()`
+and `ht_impute()` replace the manual per-species loop with a single call
+each. `fit_hd_models_by_group()` handles the SP0 loop, SP_TYPE fallback,
+and the mixed/fixed decision automatically. `ht_impute()` applies the
+fitted models and BLUP calibration to fill all missing heights.
+
+```{r predict-missing}
+hd_result <- fit_hd_models_by_group(measured)
+print(hd_result$summary, row.names = FALSE)
+
+sim_trees <- ht_impute(sim_trees, hd_result, impute_btop = TRUE)
+
+n_filled <- sum(is.na(sim_trees$HEIGHT) & !is.na(sim_trees$HT_PROJ))
+cat(sprintf("%d of %d missing heights filled. Still missing: %d\n",
+            n_filled,
+            sum(is.na(sim_trees$HEIGHT)),
+            sum(is.na(sim_trees$HT_PROJ))))
+```
+
+A sample of the predictions alongside the true (simulated) heights:
+
+```{r prediction-check}
+predicted_rows <- which(is.na(sim_trees$HEIGHT) & !is.na(sim_trees$HT_PROJ))
+check <- sim_trees[head(predicted_rows, 10),
+                   c("unitreeid", "SPECIES", "DBH", "HT_PROJ", "HEIGHT_TRUE")]
+print(check, row.names = FALSE)
+```
+
+---
+
+## Summary
+
+| Step | Function |
+|---|---|
+| Fit a single model (one species/group) | `fit_hd_model(data, model)` |
+| Add plot-level random effect | `fit_hd_model(data, model, group_col)` |
+| Add tree-level random effect (multi-year) | `fit_hd_model(data, model, group_col, nested_col)` |
+| Fit all SP0 groups + SP_TYPE fallback | `fit_hd_models_by_group(measured)` |
+| Fill missing heights (operational) | `ht_impute(trees, hd_result)` |
+| Predict from known coefficients | `ht_from_dbh()` / `ht_naslund()` etc. |

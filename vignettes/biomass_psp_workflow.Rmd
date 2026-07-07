@@ -1,0 +1,252 @@
+---
+title: "Tree Biomass Estimation with PSP Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Tree Biomass Estimation with PSP Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 6,
+  fig.height = 4
+)
+```
+
+## Overview
+
+Aboveground tree biomass is used in carbon accounting, yield monitoring, and
+nutrient cycling studies. In PSP programs, every remeasurement cycle produces
+a fresh set of DBH observations; heights are measured for a subset of trees.
+This vignette demonstrates how to use `BCallometryR` to estimate biomass from
+PSP-style data, covering three common scenarios:
+
+1. **DBH-only** — heights not available (most common in large PSP archives)
+2. **DBH + height** — for trees where height was measured
+3. **Component breakdown** — wood, bark, branches, foliage separately
+
+The equations used are from Lambert et al. (2005) and Ung et al. (2008) —
+Canadian national allometric equations fitted to destructively sampled trees.
+
+---
+
+## 1. Load PSP Data
+
+The built-in `psp_trees` dataset contains 20 plots across four BEC zones
+(SBS, ICH, CWH, IDF) with five BC species recorded as raw PSP/VRI inventory
+codes (`AT`, `FDI`, `HW`, `PLI`, `SW`). Approximately 25% of trees have
+measured heights; the rest have DBH only, which is the typical situation in a
+BC PSP archive. `bc_species_to_biomass_name()` crosses the raw codes to the
+common names expected by `biomass_tree()`.
+
+```{r load-data}
+library(BCallometryRCFS)
+
+sim_trees <- psp_trees
+
+# Crosswalk PSP codes to biomass common names
+sim_trees$SPECIES_NAME <- bc_species_to_biomass_name(sim_trees$SPECIES,
+                                                     sim_trees$BEC_ZONE)
+
+cat(sprintf("Plots: %d   Trees: %d   Heights measured: %d (%.0f%%)\n",
+            length(unique(sim_trees$SITE_IDENTIFIER)), nrow(sim_trees),
+            sum(!is.na(sim_trees$HEIGHT)),
+            100 * mean(!is.na(sim_trees$HEIGHT))))
+```
+
+---
+
+## 2. DBH-Only Biomass
+
+When tree heights are not available, the DBH-only equations provide a
+reasonable biomass estimate. This is the most common case for historic PSP
+data where full-height measurements were not collected.
+
+```{r biomass-dbh-only}
+sim_trees$BIOMASS_DBH <- biomass_tree(
+  species = sim_trees$SPECIES_NAME,
+  dbh     = sim_trees$DBH
+)
+
+# Quick summary
+sp_summary <- do.call(rbind, lapply(sort(unique(sim_trees$SPECIES)), function(sp) {
+  sub <- sim_trees[sim_trees$SPECIES == sp, ]
+  data.frame(
+    species   = sp,
+    n         = nrow(sub),
+    dbh_mean  = round(mean(sub$DBH), 1),
+    bio_mean  = round(mean(sub$BIOMASS_DBH, na.rm = TRUE), 1),
+    bio_range = paste0(round(range(sub$BIOMASS_DBH, na.rm = TRUE), 1), collapse = "–")
+  )
+}))
+print(sp_summary, row.names = FALSE)
+```
+
+---
+
+## 3. DBH + Height Biomass
+
+For trees where height was measured, the two-variable equations generally
+reduce prediction error, especially for large trees and species with strong
+height allometry.
+
+When `height` is supplied as a vector, `biomass_tree()` selects the equation
+per tree: trees with a non-`NA` height use the DBH + height equations;
+trees with `NA` height automatically fall back to the DBH-only equations.
+This means no two-pass split is needed — the entire dataset can be passed in
+one call.
+
+```{r biomass-with-height}
+# Single call: height-included where HEIGHT is available, DBH-only otherwise
+sim_trees$BIOMASS_HT <- biomass_tree(
+  species = sim_trees$SPECIES_NAME,
+  dbh     = sim_trees$DBH,
+  height  = sim_trees$HEIGHT
+)
+
+# Compare DBH-only vs DBH+height for trees where we have both
+has_ht   <- !is.na(sim_trees$HEIGHT)
+both     <- sim_trees[has_ht, ]
+diff_pct <- 100 * (both$BIOMASS_HT - both$BIOMASS_DBH) / both$BIOMASS_DBH
+
+cat(sprintf("Trees with both methods: %d\n", nrow(both)))
+cat(sprintf("Mean difference (HT - DBH): %.1f%%\n", mean(diff_pct, na.rm = TRUE)))
+cat(sprintf("SD of difference: %.1f%%\n",            sd(diff_pct,   na.rm = TRUE)))
+```
+
+```{r plot-comparison, fig.cap = "DBH+height vs DBH-only biomass for measured trees. The dashed line is 1:1."}
+plot(BIOMASS_DBH ~ DBH, data = both,
+     col  = "#00000040", pch = 16, cex = 0.7,
+     xlab = "DBH (cm)", ylab = "Biomass (kg)",
+     main = "Biomass estimates by method",
+     ylim = range(c(both$BIOMASS_DBH, both$BIOMASS_HT), na.rm = TRUE))
+
+points(BIOMASS_HT ~ DBH, data = both,
+       col = "#d6604d80", pch = 16, cex = 0.7)
+
+legend("topleft",
+       legend = c("DBH only", "DBH + height"),
+       col    = c("#000000", "#d6604d"),
+       pch    = 16, bty = "n")
+```
+
+---
+
+## 4. Component Breakdown
+
+`biomass_components()` returns wood, bark, branches, and foliage separately.
+This is useful when carbon fractions differ by component, or when only
+certain biomass pools are relevant to a study.
+
+```{r components}
+# Component breakdown for a subset of trees (DBH-only for simplicity)
+example_trees <- sim_trees[c(1, 15, 30, 55), ]
+
+comp <- biomass_components(
+  species = example_trees$SPECIES_NAME,
+  dbh     = example_trees$DBH
+)
+
+print(cbind(
+  species = example_trees$SPECIES_NAME,
+  dbh     = example_trees$DBH,
+  round(comp, 2)
+), row.names = FALSE)
+```
+
+```{r plot-components, fig.cap = "Component biomass for four example trees (DBH-only equations)."}
+bp <- barplot(
+  t(as.matrix(comp[, c("wood", "bark", "branches", "foliage")])),
+  names.arg = paste0(example_trees$SPECIES_NAME, "\n",
+                     example_trees$DBH, " cm"),
+  col  = c("#4d9221", "#a1d76a", "#e9f5e1", "#fdae61"),
+  legend.text = c("wood", "bark", "branches", "foliage"),
+  args.legend = list(x = "topleft", bty = "n", cex = 0.8),
+  ylab = "Biomass (kg)",
+  main = "Component biomass by tree",
+  cex.names = 0.75
+)
+```
+
+The wood component dominates for large conifer stems; branches and foliage
+matter more for the foliage-rich smaller diameter classes and deciduous species.
+
+---
+
+## 5. Lambert 2005 vs Ung 2008
+
+Both source papers provide national equations. Ung et al. (2008) re-fitted
+some species including BC data; for species covered by both sources the
+differences are generally small (< 5%).
+
+```{r compare-sources}
+# Compare for lodgepole pine, white spruce, trembling aspen across a DBH range
+dbh_seq <- seq(10, 55, by = 5)
+
+cmp <- lapply(c("lodgepole pine", "white spruce", "trembling aspen"), function(sp) {
+  bl <- biomass_tree(sp, dbh_seq, paper_source = "Lambert2005")
+  bu <- biomass_tree(sp, dbh_seq, paper_source = "Ung2008")
+  data.frame(
+    species       = sp,
+    dbh           = dbh_seq,
+    Lambert2005   = round(bl, 2),
+    Ung2008       = round(bu, 2),
+    diff_pct      = round(100 * (bu - bl) / bl, 1)
+  )
+})
+cmp_df <- do.call(rbind, cmp)
+
+# Show just the boundary DBH classes
+print(cmp_df[cmp_df$dbh %in% c(10, 30, 55), ], row.names = FALSE)
+```
+
+---
+
+## 6. Plot-Level Aggregation
+
+PSP analysis typically aggregates to the plot level, often expressing biomass
+as Mg/ha. Here we assume each plot is a fixed-area subplot (400 m², 0.04 ha),
+which gives an expansion factor of 25.
+
+```{r plot-level}
+PLOT_AREA_HA <- 0.04          # 20 m × 20 m subplot
+EXP_FACTOR   <- 1 / PLOT_AREA_HA  # trees/ha expansion factor
+
+# Use DBH-only biomass for all trees (universal coverage)
+plot_biomass <- do.call(rbind, lapply(unique(sim_trees$SITE_IDENTIFIER), function(pid) {
+  sub   <- sim_trees[sim_trees$SITE_IDENTIFIER == pid, ]
+  total <- sum(sub$BIOMASS_DBH, na.rm = TRUE) * EXP_FACTOR / 1000  # Mg/ha
+  data.frame(
+    SITE_IDENTIFIER = pid,
+    BEC_ZONE   = sub$BEC_ZONE[1],
+    N_TREES    = nrow(sub),
+    BIOMASS_MG_HA = round(total, 1)
+  )
+}))
+
+print(plot_biomass[order(plot_biomass$BIOMASS_MG_HA, decreasing = TRUE), ],
+      row.names = FALSE)
+cat(sprintf("\nMean plot biomass: %.1f Mg/ha  (SD: %.1f)\n",
+            mean(plot_biomass$BIOMASS_MG_HA),
+            sd(plot_biomass$BIOMASS_MG_HA)))
+```
+
+---
+
+## Summary
+
+| Goal | Function |
+|------|----------|
+| Total aboveground biomass (kg) | `biomass_tree(species, dbh)` |
+| Total biomass with height | `biomass_tree(species, dbh, height)` |
+| Component breakdown | `biomass_components(species, dbh, height)` |
+| Use Ung 2008 equations | `biomass_tree(..., paper_source = "Ung2008")` |
+| List available species | `sort(unique(biomass_coefs$species))` |
+| View citations | `biomass_citations()` |
+
+```{r citations}
+biomass_citations()
+```

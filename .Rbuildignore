@@ -1,0 +1,8 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.git$
+^\.github$
+^doc$
+^Meta$
+^data-raw$
+^my_tests$

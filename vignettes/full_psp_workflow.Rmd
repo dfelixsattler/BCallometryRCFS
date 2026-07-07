@@ -1,0 +1,337 @@
+---
+title: "Complete PSP Workflow: Species Crosswalk, H-D, Biomass, and Volume"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Complete PSP Workflow: Species Crosswalk, H-D, Biomass, and Volume}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 6,
+  fig.height = 4
+)
+```
+
+## Overview
+
+This vignette demonstrates the end-to-end workflow for a simplified PSP
+dataset with tree-level measurements.
+
+The steps are:
+
+1. **Species code crosswalk** — translate raw species codes (e.g. `"PLI"`,
+   `"FDI"`, `"SW"`) to the group-level SP0 codes and species common names used
+   by `tree_volume()` and `biomass_tree()`, respectively
+2. **H-D model fitting** — where there are enough plots per species group and enough trees, fit a mixed-effects
+   model; otherwise fit a fixed-effects model
+3. **Height imputation** — fill missing heights using a localised
+   mixed-effects prediction where applicable, or a population-average
+   prediction where a mixed-effects model is not available
+4. **Biomass estimation** — use the national-level biomass equations to
+   estimate total aboveground biomass and a component breakdown
+5. **Volume estimation** — calculate whole-stem volume (WSV) and gross
+   merchantable volume (MER)
+
+---
+
+## 1. PSP data
+
+Load the simplified PSP data included with the package:
+
+```{r load-data}
+library(BCallometryRCFS)
+
+trees <- psp_trees
+
+cat(sprintf(
+  "%d plots | %d trees | live: %d | dead: %d | heights measured: %d (%.0f%%) | btop: %d\n",
+  length(unique(trees$SITE_IDENTIFIER)), nrow(trees),
+  sum(trees$LV_D == "L"), sum(trees$LV_D == "D"),
+  sum(!is.na(trees$HEIGHT)), 100 * mean(!is.na(trees$HEIGHT)),
+  sum(trees$BTOP)
+))
+```
+
+In practice, any tree-level PSP data can be used. At minimum, the data should
+have the following columns:
+
+| Column | Description |
+|--------|--------------|
+| `SITE_IDENTIFIER` | Plot identifier |
+| `BEC_ZONE` | BEC zone code (used for species correction and taper equation) |
+| `SPECIES` | Raw BC inventory code, e.g. `"PLI"`, `"FDI"`, `"SW"`, `"HW"` |
+| `DBH` | Diameter at breast height (cm) |
+| `HEIGHT` | Total height (m); `NA` for unmeasured, dead, or broken-top trees |
+| `LV_D` | Tree status: `"L"` = live, `"D"` = dead (standing snag) |
+| `BTOP` | Logical; `TRUE` if the tree has a broken top |
+
+---
+
+## 2. Species code crosswalk
+
+In BC, field-entered species codes are typically stored as 2–3 character codes.
+The H-D modelling, volume, and biomass functions require either group-level
+codes or species common names. The species code crosswalks are handled by
+`species_correction()`, `bc_species_to_sp0()`, `bc_species_to_sp_type()`,
+and `bc_species_to_biomass_name()`.
+
+`species_correction()` is a necessary first step: it (1) truncates 3-letter
+codes to their 2-letter form (e.g. `PLI` → `PL`, `FDI` → `FD`), and (2) uses
+BEC zone to resolve ambiguous generic codes — for example, `"S"` becomes `"SW"`
+in interior zones or `"SS"` in coastal zones, and `"B"` becomes `"BL"` or
+`"BA"` depending on zone. Once the codes are unambiguous 2-letter codes,
+`bc_species_to_sp0()` maps them to the group-level SP0 code (e.g. `"F"`,
+`"H"`, `"S"`) and `bc_species_to_sp_type()` maps them to a broad
+conifer/deciduous type (`"C"` or `"D"`). SP0 is the primary grouping used
+by the H-D and volume functions; SP_TYPE is the fallback used by
+`fit_hd_models_by_group()` when a species has too few measured trees to
+fit its own SP0-level model.
+
+The species code crosswalk pipeline is:
+
+```
+raw PSP code
+  → species_correction(bec_zone)   # truncate + BEC-disambiguate (e.g. PLI→PL, S→SW/SS)
+  → bc_species_to_sp0()            # → SP0  (e.g. "PL", "S", "F", "H")
+  → bc_species_to_sp_type()        # → SP_TYPE  ("C" conifer or "D" deciduous)
+  → bc_species_to_biomass_name()   # → common name  (e.g. "lodgepole pine")
+```
+
+```{r crosswalk}
+trees$SPECIES_CORR    <- species_correction(trees$SPECIES, trees$BEC_ZONE)
+trees$SPECIES_SP0     <- bc_species_to_sp0(trees$SPECIES_CORR)
+trees$SPECIES_SP_TYPE <- bc_species_to_sp_type(trees$SPECIES_CORR)  # "C" or "D"
+trees$SPECIES_NAME    <- bc_species_to_biomass_name(trees$SPECIES, trees$BEC_ZONE)
+
+# Show unique crosswalk mappings
+xwalk <- unique(trees[, c("SPECIES", "BEC_ZONE", "SPECIES_CORR",
+                           "SPECIES_SP0", "SPECIES_SP_TYPE", "SPECIES_NAME")])
+print(xwalk[order(xwalk$BEC_ZONE, xwalk$SPECIES), ], row.names = FALSE)
+```
+
+---
+
+## 3. H-D model fitting
+
+### Recommended pre-filtering
+
+Before fitting H-D models, the training data should be restricted to
+observations that represent a reliable measured height–DBH relationship.
+The following filters are recommended and mirror those used in the BC MoF PSP and non-PSP compilation routines:
+
+| Filter | Rationale |
+|--------|-----------|
+| Height measured (`!is.na(HEIGHT)`) | Only trees with a recorded height can be used to fit the H-D relationship |
+| Broken-top trees excluded | no valid height–DBH observation to train on |
+| Alive trees only (`LV_D == "L"`) | Dead trees are not used in H-D modelling |
+| Implausible heights excluded | Trees with abnormal height–DBH ratios should not be used; what constitutes "abnormal" is at the user's discretion (a useful starting point: flag trees where `HEIGHT / DBH ≥ 3`) |
+| Implausible DBH excluded | Trees with clearly erroneous DBH values (e.g. a dramatic unexplained drop between visits) should be excluded; again at the user's discretion |
+| Height > 1.3 m and DBH > 0 | Removes seedlings and invalid records |
+
+The recommended H-D model fitting strategy follows a two-level approach:
+
+1. **SP0 level** — fit one model per SP0-level group (e.g. all spruce)
+2. **SP_TYPE fallback** — if an SP0 group has too few measured trees or fails
+   to converge, the broader SP_TYPE group (conifer `"C"` or deciduous `"D"`)
+   model is used instead
+
+`fit_hd_models_by_group()` will, by default, fit an H-D model by SP0, falling
+back to the SP_TYPE group when there are too few plots or too few trees per
+SP0 group.
+
+For training data with repeated measurements (i.e. multi-year PSP data), set
+`site_col = "SITE_IDENTIFIER"` (plot level) and `tree_col = "unitreeid"`
+(individual tree level), where the plot-level effect absorbs between-plot
+productivity differences and the tree-level effect accounts for repeated
+measurements of the same tree across years.
+
+The training data may include both plots that have multiple measurement
+cycles and plots that have only one measurement cycle.
+
+The following decision tree shows the internal logic used by
+`fit_hd_models_by_group()`. Users may adjust the tree and plot thresholds
+through the `min_n` and `min_plots` arguments.
+
+The decision tree for each SP0 group:
+
+```
+For each SP0 group (all measured trees pooled across years)
+│
+│  n_obs  = trees with BOTH height and DBH recorded for this SP0 group
+│  n_plots = number of distinct plots containing at least one such tree
+│
+├─ n_obs < 10  OR  fitting fails  ──────────────►  no SP0 model
+│                                                   → SP_TYPE fallback below
+│
+└─ n_obs ≥ 10
+   │
+   ├─ n_plots ≥ 5
+   │  ├─ mixed-effects converges  ────────────────►  mixed-effects  ✓
+   │  └─ mixed-effects fails  →  nls succeeds  ───►  fixed-effects  ✓
+   │
+   └─ n_plots < 5
+      └─ nls succeeds  ──────────────────────►  fixed-effects  ✓
+
+SP_TYPE fallback (for SP0 groups with no model):
+└─ Pool all conifers ("C") or all deciduous ("D")
+   └─ apply the same mixed-effects → fixed-effects decision as SP0 level above
+```
+
+```{r hd-fitting}
+# Training data: alive trees with a measured height, excluding broken-top trees.
+# For real PSP data also screen for implausible H/DBH ratios and erroneous DBH values.
+measured  <- trees[!is.na(trees$HEIGHT) & !trees$BTOP & trees$LV_D == "L", ]
+hd_result <- fit_hd_models_by_group(measured)
+print(hd_result$summary, row.names = FALSE)
+
+# SP0 list used by the biomass and volume summary chunks below
+sp0_list <- sort(unique(trees$SPECIES_SP0[!is.na(trees$SPECIES_SP0)]))
+```
+
+---
+
+## 4. Height imputation
+
+`ht_impute()` fills missing heights in the full data frame using the models
+from Section 3.  It applies the SP0-level model first, falling back to the
+SP_TYPE model for any tree whose species has no SP0 model.  Three columns are
+added to `trees`:
+
+- `HT_PROJ` — filled height (m); measured heights are carried through unchanged
+- `HD_SOURCE` — source flag (e.g. `"measured"`, `"naslund_mixed-effects_sp0"`)
+- `HT_FLAG` — `"btop"` for broken-top trees, `NA` otherwise
+
+For users seeking to replicate BC MoF's compilation routine, set
+`impute_btop = TRUE`. This will estimate a total height from DBH for
+broken-top trees using the H-D models fitted in Section 3. Estimated heights
+are listed in `HT_PROJ`. The column `HT_FLAG` is used to show estimated
+heights on trees with a broken top.
+
+If break height and diameter at the break are available, `ht_from_btop()` can
+be used instead to recover total height via a taper equation, which is more
+precise than the H-D model approach. Set `impute_btop = FALSE` (the default)
+if you intend to handle broken-top trees separately this way.
+
+```{r height-imputation}
+trees <- ht_impute(trees, hd_result, impute_btop = TRUE)
+
+cat(sprintf("Heights filled: %d  |  Measured: %d  |  Still missing: %d\n",
+            sum(!is.na(trees$HT_PROJ) & is.na(trees$HEIGHT)),
+            sum(!is.na(trees$HEIGHT)),
+            sum(is.na(trees$HT_PROJ))))
+
+print(table(HD_SOURCE = trees$HD_SOURCE, useNA = "ifany"))
+print(table(HT_FLAG   = trees$HT_FLAG,   useNA = "ifany"))
+```
+
+---
+
+## 5. Biomass estimation
+
+`biomass_tree()` uses height-included equations when `height` is supplied and
+DBH-only equations when it is not.  Because `impute_btop = TRUE` was used
+above, every tree has an `HT_PROJ` and biomass can be estimated in a single
+pass.  `biomass_components()` returns wood, bark, branches, and foliage
+separately if component-level carbon fractions are needed.
+
+```{r biomass}
+# biomass_tree() selects the equation per tree: height-included where
+# HT_PROJ is not NA, DBH-only where it is. No two-pass split needed.
+has_sp <- !is.na(trees$SPECIES_NAME)
+
+trees$BIOMASS_KG <- NA_real_
+trees$BIOMASS_KG[has_sp] <- biomass_tree(
+  trees$SPECIES_NAME[has_sp], trees$DBH[has_sp],
+  height = trees$HT_PROJ[has_sp])
+
+comp <- biomass_components(trees$SPECIES_NAME[has_sp],
+                           trees$DBH[has_sp],
+                           height = trees$HT_PROJ[has_sp])
+
+for (fld in c("wood", "bark", "branches", "foliage")) {
+  col <- paste0("BIO_", toupper(fld), "_KG")
+  trees[[col]]          <- NA_real_
+  trees[[col]][has_sp]  <- comp[[fld]]
+}
+
+bio_summary <- do.call(rbind, lapply(sp0_list, function(sp0) {
+  sub <- trees[!is.na(trees$SPECIES_SP0) & trees$SPECIES_SP0 == sp0 &
+               !is.na(trees$BIOMASS_KG), ]
+  data.frame(SP0      = sp0,
+             n        = nrow(sub),
+             mean_kg  = round(mean(sub$BIOMASS_KG), 1),
+             sd_kg    = round(sd(sub$BIOMASS_KG),   1))
+}))
+print(bio_summary, row.names = FALSE)
+```
+
+---
+
+## 6. Volume estimation
+
+`tree_volume()` requires a height for every tree; trees without a filled
+height are excluded (flagged by `has_ht`). Both WSV and gross merchantable
+volume are computed in a single pass each.
+
+```{r volume}
+has_ht <- !is.na(trees$HT_PROJ) & !is.na(trees$SPECIES_SP0)
+
+trees$WSV_M3 <- NA_real_
+trees$MER_M3 <- NA_real_
+
+trees$WSV_M3[has_ht] <- tree_volume(
+  bec_zone = trees$BEC_ZONE[has_ht],
+  species  = trees$SPECIES_SP0[has_ht],
+  dbh      = trees$DBH[has_ht],
+  height   = trees$HT_PROJ[has_ht]
+)
+
+trees$MER_M3[has_ht] <- tree_volume(
+  bec_zone    = trees$BEC_ZONE[has_ht],
+  species     = trees$SPECIES_SP0[has_ht],
+  dbh         = trees$DBH[has_ht],
+  height      = trees$HT_PROJ[has_ht],
+  volume_type = "MER"
+)
+
+vol_summary <- do.call(rbind, lapply(sp0_list, function(sp0) {
+  sub <- trees[!is.na(trees$SPECIES_SP0) & trees$SPECIES_SP0 == sp0 &
+               !is.na(trees$WSV_M3), ]
+  data.frame(SP0      = sp0,
+             n        = nrow(sub),
+             WSV_mean = round(mean(sub$WSV_M3), 4),
+             MER_mean = round(mean(sub$MER_M3), 4),
+             MER_pct  = round(100 * mean(sub$MER_M3 / sub$WSV_M3), 1))
+}))
+print(vol_summary, row.names = FALSE)
+```
+
+The `MER_pct` column (merchantable fraction of WSV) reflects utilisation
+efficiency; it tends to be lower for small-diameter trees where the
+unmerchantable top represents a larger share of the stem.
+
+---
+
+---
+
+## Function quick-reference
+
+| Task | Function |
+|------|----------|
+| BEC-aware species standardisation | `species_correction(species, bec_zone)` |
+| PSP code → SP0 (for volume **and** H-D model fitting) | `bc_species_to_sp0(corrected_code)` |
+| PSP code → SP_TYPE conifer/deciduous (H-D fallback) | `bc_species_to_sp_type(corrected_code)` |
+| PSP code → common name (for biomass) | `bc_species_to_biomass_name(species, bec_zone)` |
+| H-D model fitting — all SP0 groups + SP_TYPE fallback | `fit_hd_models_by_group(measured)` |
+| Height imputation with BLUP calibration | `ht_impute(trees, hd_result)` |
+| H-D model fitting — single group (manual control) | `fit_hd_model(data, model, group_col, nested_col)` |
+| Height prediction from DBH | `ht_from_dbh(dbh, model, a, b)` |
+| Total aboveground biomass | `biomass_tree(species, dbh, height)` |
+| Component biomass | `biomass_components(species, dbh, height)` |
+| Whole-stem volume | `tree_volume(bec_zone, species, dbh, height)` |
+| Merchantable volume | `tree_volume(..., volume_type = "MER")` |
+| Log-section volume | `tree_volume_section(bec_zone, species, dbh, height, log_lengths)` |

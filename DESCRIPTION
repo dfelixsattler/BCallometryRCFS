@@ -1,0 +1,48 @@
+Package: BCallometryRCFS
+Type: Package
+Title: Allometric Equations for BC Forestry
+Version: 0.1.0
+Date: 2026-06-22
+Authors@R: c(
+    person("Derek Felix", "Sattler",
+           email = "Derek.Sattler@nrcan-rncan.gc.ca",
+           role = c("aut", "cre")),
+    person("Yong", "Luo",
+           role = "ctb",
+           comment = "Original implementation in FAIBCompiler and FAIBBase, Copyright 2019 Province of British Columbia"))
+Description: Provides allometric equations for British Columbia forestry
+  workflows. Supports four primary applications: (1) height-diameter (H-D)
+  modelling, with prediction functions for six model forms (Naslund, Curtis,
+  logistic, Korf, Weibull, Richards) and fixed-effects or mixed-effects
+  fitting, to estimate missing tree heights from DBH; (2) individual tree
+  volume including gross whole-stem volume (WSV), gross merchantable volume
+  (MER), and stump volume, using Kozak's (2002) KBEC variable-exponent taper
+  equation (16 BC species, 13 BEC zones) -- all volumes are inside-bark and
+  gross (no defect deductions); (3) tree stem profile (inside-bark diameter
+  at any height) enabling log-section volume estimates; and (4) aboveground
+  tree biomass by component (stem wood, stem bark, branches, foliage) in dry
+  kg for 45 Canadian species using Lambert et al. (2005) and Ung et al.
+  (2008). Species crosswalk utilities (species_correction(),
+  bc_species_to_sp0(), bc_species_to_biomass_name()) translate raw BC
+  inventory codes (e.g. 'PLI', 'FDI', 'SW') to the SP0 group codes required
+  for volume and the common names required for biomass. Portions of the
+  implementation are derived from the FAIBCompiler and FAIBBase R packages,
+  Copyright 2019 Province of British Columbia, with original contributions by
+  Yong Luo.
+License: Apache License (== 2.0) | file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports:
+  stats
+Suggests:
+  nlme,
+  data.table,
+  testthat (>= 3.0.0),
+  knitr,
+  rmarkdown
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+Config/roxygen2/version: 8.0.0
+RoxygenNote: 7.3.2
+Depends: 
+    R (>= 3.5)

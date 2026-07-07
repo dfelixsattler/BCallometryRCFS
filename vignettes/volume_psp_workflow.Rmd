@@ -1,0 +1,332 @@
+---
+title: "Tree Volume Estimation with PSP Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Tree Volume Estimation with PSP Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 6,
+  fig.height = 4
+)
+```
+
+## Overview
+
+Individual-tree gross volume is a core output of BC forest inventory and PSP
+remeasurement programs. This vignette demonstrates how to compute tree volume
+using the **Kozak (2002) KBEC variable-exponent taper equation** as implemented
+in `tree_volume()`. The function accepts BEC zone and species codes that are
+standard in BC PSP and inventory databases.
+
+Topics covered:
+
+1. Compute whole-stem (WSV), merchantable (MER), and stump volume for PSP trees
+2. Understand the difference between volume types
+3. Handle broken-top trees
+4. Aggregate to plot-level growing stock
+5. Bridge with H-D predictions when heights are missing
+
+The taper equation requires both DBH and total height. See the
+*Height-Diameter Modelling with PSP Data* vignette for filling missing heights
+before running the volume calculations here.
+
+---
+
+## 1. Load PSP Data
+
+The built-in `psp_trees` dataset contains 20 plots across four BEC zones
+(SBS, ICH, CWH, IDF) with five BC species recorded as raw PSP/VRI inventory
+codes (`AT`, `FDI`, `HW`, `PLI`, `SW`). The BEC-zone-aware crosswalk
+(`species_correction()` → `bc_species_to_sp0()`) maps these to the SP0 group
+codes required by `tree_volume()`. Volume requires a measured or predicted
+height; here we use `HEIGHT_TRUE` (available for all trees) to focus on the
+volume workflow. In practice, you would first predict missing heights using
+the H-D modelling workflow (see `vignette("hd_psp_workflow")`).
+
+`tree_volume()` looks up Kozak taper coefficients internally from
+`taper_coefs_kbec` (KBEC) or `taper_coefs_kfiz3` (KFIZ3). Users never need
+to access these tables directly, but they can be inspected to check which
+species and zone combinations are supported:
+
+```r
+# Species/BEC combinations available for KBEC
+unique(taper_coefs_kbec[, c("species", "bec_zone")])
+
+# Species/FIZ combinations available for KFIZ3
+unique(taper_coefs_kfiz3[, c("species", "fiz_zone")])
+```
+
+```{r load-data}
+library(BCallometryRCFS)
+
+# Use HEIGHT_TRUE so all trees have a height value for volume calculation.
+# In practice, replace with predicted heights from fit_hd_model() first.
+sim_trees <- psp_trees
+sim_trees$HEIGHT      <- sim_trees$HEIGHT_TRUE
+sim_trees$SPECIES_SP0 <- bc_species_to_sp0(
+                           species_correction(sim_trees$SPECIES,
+                                             sim_trees$BEC_ZONE))
+
+cat(sprintf("Plots: %d   |   Trees: %d   |   BEC zones: %s\n",
+            length(unique(sim_trees$SITE_IDENTIFIER)), nrow(sim_trees),
+            paste(sort(unique(sim_trees$BEC_ZONE)), collapse = ", ")))
+```
+
+---
+
+## 2. Whole-Stem Volume
+
+`tree_volume()` accepts vectors and recycles scalar `bec_zone` or `species`
+arguments, matching the conventions used in PSP data frames where one column
+holds the BEC zone and another holds the species code.
+
+```{r wsv}
+sim_trees$WSV <- tree_volume(
+  bec_zone = sim_trees$BEC_ZONE,
+  species  = sim_trees$SPECIES_SP0,
+  dbh      = sim_trees$DBH,
+  height   = sim_trees$HEIGHT
+)
+
+cat(sprintf("Computed WSV for %d trees. NA: %d\n",
+            nrow(sim_trees), sum(is.na(sim_trees$WSV))))
+
+# Summary by species
+sp_summary <- do.call(rbind, lapply(c("D","H","PL","S"), function(sp) {
+  sub <- sim_trees[sim_trees$SPECIES_SP0 == sp & !is.na(sim_trees$WSV), ]
+  if (nrow(sub) == 0) return(NULL)
+  data.frame(
+    species    = sp,
+    n          = nrow(sub),
+    dbh_mean   = round(mean(sub$DBH), 1),
+    ht_mean    = round(mean(sub$HEIGHT), 1),
+    wsv_mean   = round(mean(sub$WSV), 3),
+    wsv_range  = paste0(round(range(sub$WSV), 3), collapse = "–")
+  )
+}))
+print(sp_summary, row.names = FALSE)
+```
+
+```{r plot-wsv, fig.cap = "Whole-stem volume by DBH, coloured by species."}
+sp_cols <- c(D = "#1b7837", H = "#762a83", PL = "#d6604d", S = "#4393c3")
+vis     <- sim_trees[!is.na(sim_trees$WSV), ]
+
+plot(WSV ~ DBH, data = vis,
+     col  = sp_cols[vis$SPECIES_SP0],
+     pch  = 16, cex = 0.7,
+     xlab = "DBH (cm)", ylab = expression(WSV~(m^3)),
+     main = "Whole-stem volume vs DBH")
+legend("topleft",
+       legend = names(sp_cols),
+       col    = sp_cols,
+       pch    = 16, bty = "n", title = "Species")
+```
+
+---
+
+## 3. Volume Types: WSV, MER, and STUMP
+
+Three volume types are available:
+
+- **WSV** — whole-stem volume from ground to tip (stump cylinder +
+  Smalian slices to the tip)
+- **MER** — merchantable volume: WSV minus stump and minus the top section
+  where inside-bark diameter falls below `utop_dib` (default 10 cm)
+- **STUMP** — volume of the stump cylinder only
+
+```{r volume-types}
+# Compute all three types for a subset of trees
+subset_idx <- which(sim_trees$DBH >= 20 & sim_trees$DBH <= 40)[1:8]
+ex <- sim_trees[subset_idx, c("unitreeid", "SPECIES", "SPECIES_SP0", "DBH", "HEIGHT")]
+
+ex$WSV   <- tree_volume(sim_trees$BEC_ZONE[subset_idx],
+                        ex$SPECIES_SP0, ex$DBH, ex$HEIGHT,
+                        volume_type = "WSV")
+ex$MER   <- tree_volume(sim_trees$BEC_ZONE[subset_idx],
+                        ex$SPECIES_SP0, ex$DBH, ex$HEIGHT,
+                        volume_type = "MER")
+ex$STUMP <- tree_volume(sim_trees$BEC_ZONE[subset_idx],
+                        ex$SPECIES_SP0, ex$DBH, ex$HEIGHT,
+                        volume_type = "STUMP")
+
+ex[, c("WSV","MER","STUMP")] <- round(ex[, c("WSV","MER","STUMP")], 4)
+print(ex, row.names = FALSE)
+```
+
+The MER-to-WSV ratio (`MER/WSV`) reflects utilisation efficiency and varies
+by DBH: for small trees the top log is a larger proportion of the stem, so
+the ratio tends to be lower.
+
+```{r mer-ratio, fig.cap = "MER/WSV ratio as a function of DBH. Values below 1 indicate volume lost to stump and unmerchantable top."}
+sim_trees$MER <- tree_volume(
+  bec_zone    = sim_trees$BEC_ZONE,
+  species     = sim_trees$SPECIES_SP0,
+  dbh         = sim_trees$DBH,
+  height      = sim_trees$HEIGHT,
+  volume_type = "MER"
+)
+
+vis2 <- sim_trees[!is.na(sim_trees$WSV) & sim_trees$WSV > 0, ]
+vis2$MER_RATIO <- vis2$MER / vis2$WSV
+
+plot(MER_RATIO ~ DBH, data = vis2,
+     col  = sp_cols[vis2$SPECIES_SP0],
+     pch  = 16, cex = 0.7,
+     xlab = "DBH (cm)", ylab = "MER / WSV",
+     main = "Merchantable fraction of whole-stem volume",
+     ylim = c(0, 1))
+abline(h = 1, lty = 2, col = "grey50")
+legend("bottomright",
+       legend = names(sp_cols),
+       col    = sp_cols,
+       pch    = 16, bty = "n", title = "Species")
+```
+
+---
+
+## 4. Broken-Top Trees
+
+PSPs regularly contain broken-top trees. The `btop_height` parameter caps
+the effective tree height used in the integration, so broken-top WSV is
+computed up to the break point only.
+
+```{r broken-top}
+# One example tree across a range of break heights
+ex_dbh  <- 35.0
+ex_ht   <- 30.0
+ex_bec  <- "CWH"
+ex_sp   <- "H"
+
+v_full  <- tree_volume(ex_bec, ex_sp, ex_dbh, ex_ht)
+btops   <- seq(10, 28, by = 2)
+# tree_volume iterates over trees; use sapply to vary btop_height for one tree
+v_btop  <- sapply(btops, function(bt)
+  tree_volume(ex_bec, ex_sp, ex_dbh, ex_ht, btop_height = bt))
+
+cat(sprintf("Full WSV (30 m): %.4f m³\n", v_full))
+print(data.frame(btop_height = btops, WSV = round(v_btop, 4)),
+      row.names = FALSE)
+```
+
+```{r plot-btop, fig.cap = "Whole-stem volume loss as break height decreases below total height."}
+plot(c(btops, ex_ht), c(v_btop, v_full),
+     type = "b", pch = 16, col = "#762a83",
+     xlab = "Break height (m)",
+     ylab = "WSV (m^3)",
+     main = sprintf("Broken-top volume  (DBH=%.0f cm, H=%.0f m, %s %s)",
+                    ex_dbh, ex_ht, ex_bec, ex_sp))
+abline(h = v_full, lty = 2, col = "grey50")
+text(ex_ht - 1, v_full * 1.015, "full stem", cex = 0.75, col = "grey50")
+```
+
+---
+
+## 5. Plot-Level Volume
+
+Growing stock volume (m³/ha) is the most commonly reported PSP output.
+Here we aggregate WSV to the plot level, assuming a 400 m² (0.04 ha) subplot.
+
+```{r plot-volume}
+PLOT_AREA_HA <- 0.04
+EXP_FACTOR   <- 1 / PLOT_AREA_HA   # 25 trees-equivalent/ha
+
+plot_vol <- do.call(rbind, lapply(unique(sim_trees$SITE_IDENTIFIER), function(pid) {
+  sub   <- sim_trees[sim_trees$SITE_IDENTIFIER == pid & !is.na(sim_trees$WSV), ]
+  data.frame(
+    SITE_IDENTIFIER = pid,
+    BEC_ZONE   = sub$BEC_ZONE[1],
+    N_TREES    = nrow(sub),
+    WSV_M3_HA  = round(sum(sub$WSV,   na.rm = TRUE) * EXP_FACTOR, 1),
+    MER_M3_HA  = round(sum(sub$MER,   na.rm = TRUE) * EXP_FACTOR, 1)
+  )
+}))
+
+print(plot_vol[order(plot_vol$WSV_M3_HA, decreasing = TRUE), ],
+      row.names = FALSE)
+cat(sprintf("\nMean WSV: %.1f m³/ha  |  Mean MER: %.1f m³/ha\n",
+            mean(plot_vol$WSV_M3_HA),
+            mean(plot_vol$MER_M3_HA)))
+```
+
+---
+
+## 6. Bridging with H-D Predictions
+
+In practice, PSP heights are partially measured. A typical pipeline:
+
+1. Fit H-D models per species using `fit_hd_model()` (see H-D vignette)
+2. Predict missing heights with `ht_from_dbh()`
+3. Pass the complete height vector to `tree_volume()`
+
+```{r hd-bridge}
+# Introduce 60% missing heights to the dataset
+set.seed(99)
+sim_trees$HEIGHT_OBS <- sim_trees$HEIGHT
+sim_trees$HEIGHT_OBS[sample(nrow(sim_trees), round(nrow(sim_trees) * 0.60))] <- NA
+
+# Step 1: Fit per-species H-D models from measured trees
+measured_trees <- sim_trees[!is.na(sim_trees$HEIGHT_OBS), ]
+fits <- lapply(c("D", "H", "PL", "S"), function(sp) {
+  sub <- measured_trees[measured_trees$SPECIES_SP0 == sp, ]
+  if (nrow(sub) < 5) return(NULL)
+  fit <- tryCatch(fit_hd_model(sub, model = "naslund"), error = function(e) NULL)
+  list(sp = sp, fit = fit)
+})
+
+# Step 2: Predict missing heights
+sim_trees$HT_PROJ <- sim_trees$HEIGHT_OBS
+for (f in fits) {
+  if (is.null(f$fit)) next
+  cf      <- f$fit$coefficients
+  missing <- is.na(sim_trees$HEIGHT_OBS) & sim_trees$SPECIES_SP0 == f$sp
+  sim_trees$HT_PROJ[missing] <- round(
+    ht_from_dbh(sim_trees$DBH[missing],
+                model = "naslund", a = cf["a"], b = cf["b"]),
+    1
+  )
+}
+
+cat(sprintf("Heights filled: %d / %d  |  Still missing: %d\n",
+            sum(!is.na(sim_trees$HT_PROJ)),
+            nrow(sim_trees),
+            sum(is.na(sim_trees$HT_PROJ))))
+
+# Step 3: Compute volume on the complete height vector
+complete <- !is.na(sim_trees$HT_PROJ)
+sim_trees$WSV_FILLED <- NA_real_
+sim_trees$WSV_FILLED[complete] <- tree_volume(
+  bec_zone = sim_trees$BEC_ZONE[complete],
+  species  = sim_trees$SPECIES_SP0[complete],
+  dbh      = sim_trees$DBH[complete],
+  height   = sim_trees$HT_PROJ[complete]
+)
+
+cat(sprintf("Volume computed for %d trees  (%.0f%% coverage)\n",
+            sum(!is.na(sim_trees$WSV_FILLED)),
+            100 * mean(!is.na(sim_trees$WSV_FILLED))))
+```
+
+---
+
+## Summary
+
+| Goal | Function / argument |
+|------|---------------------|
+| Whole-stem volume (m³) | `tree_volume(bec, sp, dbh, ht)` |
+| Merchantable volume | `tree_volume(..., volume_type = "MER")` |
+| Stump volume | `tree_volume(..., volume_type = "STUMP")` |
+| Broken-top tree | `tree_volume(..., btop_height = h)` |
+| Change stump height | `tree_volume(..., stump_height = 0.15)` |
+| Change top DIB limit | `tree_volume(..., utop_dib = 7)` |
+| Available species / BEC | `taper_coefs_kbec[, c("species","bec_zone")]` |
+| View citations | `volume_citations()` |
+
+```{r citations}
+volume_citations()
+```
