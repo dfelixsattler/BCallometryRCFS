@@ -1,8 +1,17 @@
 # BCallometryRCFS
 
-An R package for tree-level allometric calculations from BC permanent sample
-plot (PSP) and non-PSP inventory data: species code crosswalk, height–diameter
-modelling, height imputation, biomass estimation, and stem volume.
+An R package for tree-level calculation of H-D relationships and height
+imputation, stem volume, and above-ground biomass, with an emphasis on
+compatibility with BC Ministry of Forests' PSP and non-PSP field data.
+
+Many of the package's functions were designed to replicate the BC Forest
+Analysis and Inventory Branch's (FAIB) compilation routines for PSP and
+non-PSP data, found in FAIBCompiler and FAIBBase. The current package
+attempts to improve on the existing functions by (1) making them more
+accessible through simplified functions and comprehensive vignettes,
+(2) giving the user greater control over key decisions (e.g. model form
+selection, broken-top tree handling, mixed- vs. fixed-effects fitting), and
+(3) improving documentation.
 
 ## Installation
 
