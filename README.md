@@ -17,7 +17,7 @@ selection, broken-top tree handling, mixed- vs. fixed-effects fitting), and
 
 ```r
 # Install from GitHub
-remotes::install_github("your-org/BCallometryRCFS")
+remotes::install_github("dfelixsattler/BCallometryRCFS")
 ```
 
 ## Data pipeline
