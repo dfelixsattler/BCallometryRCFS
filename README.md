@@ -34,7 +34,6 @@ flowchart TD
     end
 
     SC2 --> HD
-    SC3 --> HD
 
     subgraph HD["2 · H-D modelling  (alive, measured trees only)"]
         direction TB
