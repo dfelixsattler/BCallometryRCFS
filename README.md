@@ -117,6 +117,9 @@ trees$BIOMASS_KG <- biomass_tree(trees$SPECIES_NAME, trees$DBH,
 
 ### Raw PSP data columns (inputs)
 
+The data passed to the package functions should have, at minimum, the
+following columns:
+
 | Column | Description |
 |---|---|
 | `SITE_IDENTIFIER` | Plot/site identifier |
