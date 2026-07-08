@@ -13,6 +13,11 @@ accessible through simplified functions and comprehensive vignettes,
 selection, broken-top tree handling, mixed- vs. fixed-effects fitting), and
 (3) improving documentation.
 
+While this package was designed with BC PSP and non-PSP data in mind, plot
+data from other jurisdictions can also be used. The main requirement is that
+column names in the user's dataset match those expected by the functions (or
+that the relevant `_col` arguments are set to the correct column names).
+
 ## Installation
 
 ```r
