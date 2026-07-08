@@ -113,6 +113,34 @@ trees$BIOMASS_KG <- biomass_tree(trees$SPECIES_NAME, trees$DBH,
 | `vignette("biomass_psp_workflow")` | Biomass equations |
 | `vignette("volume_psp_workflow")` | Kozak taper volume |
 
+## Column reference
+
+### Raw PSP data columns (inputs)
+
+| Column | Description |
+|---|---|
+| `SITE_IDENTIFIER` | Plot/site identifier |
+| `VISIT_NUMBER` | Measurement period (multi-year data) |
+| `unitreeid` | Unique tree identifier across all visits |
+| `SPECIES` | Raw BC inventory species code (e.g. `"PLI"`, `"FDI"`, `"HW"`) |
+| `BEC_ZONE` | Biogeoclimatic Ecosystem Classification zone (e.g. `"SBS"`, `"CWH"`) |
+| `DBH` | Diameter at breast height (cm) |
+| `HEIGHT` | Measured total height (m); `NA` for unmeasured trees |
+| `BTOP` | `TRUE` if the tree has a broken top |
+| `LV_D` | Tree status: `"L"` = live, `"D"` = dead standing |
+
+### Columns added by the package
+
+| Column | Added by | Description |
+|---|---|---|
+| `SPECIES_CORR` | `species_correction()` | BEC-disambiguated species code |
+| `SPECIES_SP0` | `bc_species_to_sp0()` | SP0 group code used by H-D and volume functions |
+| `SPECIES_SP_TYPE` | `bc_species_to_sp_type()` | `"C"` (conifer) or `"D"` (deciduous); H-D fallback grouping |
+| `SPECIES_NAME` | `bc_species_to_biomass_name()` | Common name used by biomass equations |
+| `HT_PROJ` | `ht_impute()` | Filled height (m); measured or model-estimated |
+| `HD_SOURCE` | `ht_impute()` | Source of the height value (e.g. `"measured"`, `"naslund_mixed-effects_sp0"`) |
+| `HT_FLAG` | `ht_impute()` | QC flag (e.g. `"btop"` for broken-top trees) |
+
 ## Citation
 
 ```r
