@@ -47,10 +47,19 @@ group.  When more than one is supplied, all are tried and the best is
 selected.  Default \code{c("naslund", "curtis")}.}
 
 \item{min_n}{integer. Minimum number of valid observations required
-to attempt fitting.  Default \code{10L}.}
+to attempt fitting for an SP0 group.  Default \code{10L}, which suits
+small study-area datasets.  The BC MoF compilation routine
+(\code{DBH_Height_MEM.R}) uses \strong{1 000 observations} as its
+threshold before fitting a species- or SP0-level model from the
+provincial PSP + non-PSP pool; users with province-wide data may wish to
+set \code{min_n = 1000L} to match that standard.}
 
 \item{min_plots}{integer. Minimum number of distinct plots required to
-attempt mixed-effects fitting.  Default \code{5L}.}
+attempt mixed-effects fitting.  Default \code{5L}.  Increase this if
+you want tighter guarantees on the between-plot variance estimate (the
+BC MoF routine does not enforce an explicit plot minimum — it simply
+attempts the mixed-effects fit and falls back to fixed-effects on
+convergence failure).}
 }
 \value{
 A list with two elements:

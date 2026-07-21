@@ -13,7 +13,7 @@ devtools::install("C:/BCallometryR", build_vignettes = TRUE)
 
 library(BCallometryR)
 ?BCallometryR
-
+volume_citations()
 ###########################################################
 # Full Workflow
 ###########################################################

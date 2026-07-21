@@ -156,6 +156,12 @@ The following decision tree shows the internal logic used by
 `fit_hd_models_by_group()`. Users may adjust the tree and plot thresholds
 through the `min_n` and `min_plots` arguments.
 
+> **Note on thresholds:** The defaults (`min_n = 10`, `min_plots = 5`) are
+> set for small study-area datasets. The BC MoF compilation routine fits
+> species- and SP0-level models only when **≥ 1 000 observations** are
+> available from its province-wide PSP + non-PSP pool. Users working with
+> province-wide data may want to set `min_n = 1000` to match that standard.
+
 The decision tree for each SP0 group:
 
 ```
